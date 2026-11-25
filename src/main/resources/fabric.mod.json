@@ -1,0 +1,27 @@
+{
+    "schemaVersion": 1,
+    "id": "variantsmp",
+    "version": "${version}",
+    "name": "variantSMP",
+    "description": "Server side PvP mechanics: mace chain, spear lunge, combat log, flight time, PearlCatch, armor trim abilities and mace limit.",
+    "license": "MIT",
+    "environment": "*",
+    "entrypoints": {
+        "main": [
+            "com.variantsmp.VariantSMP",
+            "com.variantstrims.VariantsTrims",
+            "com.macelimit.MaceLimit"
+        ]
+    },
+    "depends": {
+        "fabricloader": ">=0.16.0",
+        "minecraft": "~1.21.11",
+        "java": ">=21",
+        "fabric-api": "*"
+    },
+    "mixins": [
+        "variantsmp.mixins.json",
+        "variantstrims.mixins.json",
+        "macelimit.mixins.json"
+    ]
+}

@@ -1,0 +1,19 @@
+{
+    "required": false,
+    "minVersion": "0.8",
+    "package": "com.variantstrims.mixin",
+    "compatibilityLevel": "JAVA_21",
+    "mixins": [
+        "DamageMixin",
+        "StatusEffectMixin",
+        "ExperienceMixin",
+        "EquipmentMixin",
+        "ItemDamageMixin",
+        "DeathProtectorMixin",
+        "PotionDrinkMixin",
+        "SplashPotionMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 0
+    }
+}

@@ -1,0 +1,239 @@
+package com.variantsmp;
+
+import com.variantsmp.mixin.PlayerEntityAccessor;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.ItemEnchantmentsComponent;
+import net.minecraft.enchantment.Enchantment;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.entity.damage.DamageType;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.RegistryKeys;
+import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.util.Formatting;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.math.Vec3d;
+
+public final class MaceAbility {
+
+    private MaceAbility() {}
+
+    private static final RegistryKey<Enchantment> WIND_BURST =
+            RegistryKey.of(RegistryKeys.ENCHANTMENT, Identifier.ofVanilla("wind_burst"));
+    private static final RegistryKey<DamageType> MACE_SMASH =
+            RegistryKey.of(RegistryKeys.DAMAGE_TYPE, Identifier.ofVanilla("mace_smash"));
+    private static final double FORCED_FALL = 2.0;
+    private static final int RELAND_DELAY = 5;
+    private static final int CHAIN_KILL_COOLDOWN_SECONDS = 10;
+    private static boolean loggedOverride;
+
+    public record Prepared(ItemStack weapon, ServerPlayerEntity player, double savedFall) {
+        public void restore() {
+            if (player != null && !Double.isNaN(savedFall)) player.fallDistance = savedFall;
+        }
+    }
+
+    private static ModConfig cfg() {
+        return VariantSMP.get().config;
+    }
+
+    static boolean isMace(ServerPlayerEntity player, ItemStack weapon) {
+        return (weapon != null && weapon.isOf(Items.MACE)) || player.getMainHandStack().isOf(Items.MACE);
+    }
+
+    private static boolean cooling(PlayerState s, int now) {
+        return s.maceCooling && now < s.maceCooldownUntil;
+    }
+
+    static float beforeDamage(ServerPlayerEntity player, PlayerState s, LivingEntity target, DamageSource source,
+                              ItemStack weapon, float amount, int now) {
+        if (!cfg().pvpFeatures || (!(target instanceof ServerPlayerEntity) && !CombatLog.inCombat(player, now))) {
+            s.maceHit = false;
+            return amount;
+        }
+        boolean smash = source.isOf(MACE_SMASH);
+        boolean mace = smash || isMace(player, weapon);
+        s.maceHit = mace;
+        s.maceSmash = smash;
+        s.maceLoadTarget = target instanceof ServerPlayerEntity && target != player;
+        if (!mace) return amount;
+        if (cooling(s, now)) {
+            s.maceShowUntil = now + Abilities.SHOW_TICKS;
+            return ModConfig.MACE_DISABLED.equals(cfg().maceCooldownMode) ? Float.NaN : amount;
+        }
+        if (s.maceEmpowered || (smash && s.maceLoadTarget && s.maceHits >= 2)) {
+            return amount * (float) cfg().maceMultiplier;
+        }
+        return amount;
+    }
+
+    static void afterDamage(ServerPlayerEntity player, PlayerState s, boolean hit, int now) {
+        if (!s.maceHit) return;
+        boolean smash = s.maceSmash;
+        boolean loadTarget = s.maceLoadTarget;
+        s.maceHit = false;
+        s.maceSmash = false;
+        s.maceLoadTarget = false;
+        if (!hit) return;
+        if (cooling(s, now)) {
+            if (ModConfig.MACE_NO_WIND_BURST.equals(cfg().maceCooldownMode)) s.macePendingLevel = 0;
+            return;
+        }
+        if (s.maceEmpowered) {
+            s.macePendingLevel = 3;
+            s.maceLandTick = -1;
+            s.maceLastEmpoweredHit = now;
+            Abilities.bar(player, "Chain hit", Formatting.GOLD);
+            return;
+        }
+        if (!smash || !loadTarget) {
+            s.macePendingLevel = 0;
+            return;
+        }
+        s.maceHits++;
+        if (s.maceHits == 1) {
+            s.macePendingLevel = 1;
+            Abilities.bar(player, "First hit", Formatting.AQUA);
+        } else if (s.maceHits == 2) {
+            s.macePendingLevel = 0;
+            Abilities.bar(player, "Second hit", Formatting.GRAY);
+        } else {
+            s.macePendingLevel = 3;
+            s.maceEmpowered = true;
+            s.maceLandTick = -1;
+            s.maceLastEmpoweredHit = now;
+            Abilities.bar(player, "Chain hit", Formatting.GOLD);
+        }
+    }
+
+    public static Prepared prepare(DamageSource source, ItemStack weapon) {
+        try {
+            if (weapon == null || weapon.isEmpty()) return new Prepared(weapon, null, Double.NaN);
+            if (!(source.getAttacker() instanceof ServerPlayerEntity player)) return new Prepared(weapon, null, Double.NaN);
+            VariantSMP mod = VariantSMP.get();
+            PlayerState s = mod == null ? null : mod.peek(player);
+            if (s == null || s.macePendingLevel < 0) return new Prepared(weapon, null, Double.NaN);
+            int level = s.macePendingLevel;
+            s.macePendingLevel = -1;
+            RegistryEntry<Enchantment> windBurst = Abilities.enchant(player, WIND_BURST);
+            if (windBurst == null) return new Prepared(weapon, null, Double.NaN);
+
+            ItemStack copy = weapon.copy();
+            ItemEnchantmentsComponent.Builder builder = new ItemEnchantmentsComponent.Builder(
+                    copy.getOrDefault(DataComponentTypes.ENCHANTMENTS, ItemEnchantmentsComponent.DEFAULT));
+            builder.remove(entry -> entry.matchesKey(WIND_BURST));
+            if (level > 0) builder.set(windBurst, level);
+            copy.set(DataComponentTypes.ENCHANTMENTS, builder.build());
+
+            double saved = Double.NaN;
+            if (level > 0) {
+                if (player.fallDistance < FORCED_FALL) {
+                    saved = player.fallDistance;
+                    player.fallDistance = FORCED_FALL;
+                }
+                try {
+                    PlayerEntityAccessor acc = (PlayerEntityAccessor) player;
+                    acc.variantsmp$setIgnoreFallDamageFromCurrentExplosion(true);
+                    acc.variantsmp$setCurrentExplosionImpactPos(new Vec3d(player.getX(), player.getY(), player.getZ()));
+                } catch (Throwable t) {
+                    VariantSMP.LOGGER.warn("variantSMP: fall damage protection unavailable", t);
+                }
+            }
+            if (!loggedOverride) {
+                loggedOverride = true;
+                VariantSMP.LOGGER.info("variantSMP: mace wind burst override is active");
+            }
+            return new Prepared(copy, player, saved);
+        } catch (Throwable t) {
+            VariantSMP.LOGGER.warn("variantSMP: mace wind burst override failed", t);
+            return new Prepared(weapon, null, Double.NaN);
+        }
+    }
+
+    static void startCooldown(ServerPlayerEntity player, PlayerState s, int now) {
+        boolean chainKill = s.maceChainKill;
+        s.maceEmpowered = false;
+        s.maceHits = 0;
+        s.macePendingLevel = -1;
+        s.maceLandTick = -1;
+        s.maceChainKill = false;
+        String mode = cfg().maceCooldownMode;
+        int seconds = chainKill ? CHAIN_KILL_COOLDOWN_SECONDS : cfg().maceCooldownSeconds;
+        int ticks = Math.max(0, seconds) * 20;
+        if (ModConfig.MACE_NO_COOLDOWN.equals(mode) || ticks <= 0) {
+            s.maceCooldownUntil = 0;
+            s.maceCooling = false;
+            return;
+        }
+        s.maceCooldownUntil = now + ticks;
+        s.maceCooling = true;
+        if (ModConfig.MACE_DISABLED.equals(mode)) {
+            player.getItemCooldownManager().set(new ItemStack(Items.MACE), ticks);
+        }
+    }
+
+    static void onKill(ServerPlayerEntity player, PlayerState s) {
+        if (s.maceEmpowered) s.maceChainKill = true;
+        if (!cfg().maceKillReset || !s.maceCooling) return;
+        s.maceCooling = false;
+        s.maceCooldownUntil = 0;
+        s.maceShowUntil = 0;
+        clearItemCooldown(player);
+        Abilities.ready(player, "Mace available");
+    }
+
+    static void clearItemCooldown(ServerPlayerEntity player) {
+        ItemStack mace = new ItemStack(Items.MACE);
+        player.getItemCooldownManager().remove(player.getItemCooldownManager().getGroup(mace));
+    }
+
+    static void tick(ServerPlayerEntity player, PlayerState s, int now) {
+        if (!cfg().pvpFeatures) {
+            if (s.maceEmpowered || s.maceHits > 0 || s.maceCooling) {
+                boolean cooling = s.maceCooling;
+                s.resetMace();
+                if (cooling) clearItemCooldown(player);
+            }
+            return;
+        }
+        if (s.maceEmpowered) {
+            if (s.maceLandTick < 0 && player.isOnGround() && now - s.maceLastEmpoweredHit > RELAND_DELAY) {
+                s.maceLandTick = now;
+            }
+            int grace = (int) Math.round(Math.max(0.0, cfg().maceLandGraceSeconds) * 20.0);
+            if (s.maceLandTick >= 0 && now - s.maceLandTick >= grace) {
+                startCooldown(player, s, now);
+            }
+            return;
+        }
+        if (s.maceCooling && now >= s.maceCooldownUntil) {
+            s.maceCooling = false;
+            s.maceShowUntil = 0;
+            Abilities.ready(player, "Mace available");
+        }
+    }
+
+    static void outOfCombat(ServerPlayerEntity player, PlayerState s, boolean justLeft) {
+        if (s.maceHits > 0 || s.maceEmpowered) {
+            s.maceHits = 0;
+            s.maceEmpowered = false;
+            s.maceLandTick = -1;
+            s.maceChainKill = false;
+        }
+        if (justLeft && s.maceCooling) {
+            s.maceCooling = false;
+            s.maceCooldownUntil = 0;
+            s.maceShowUntil = 0;
+            clearItemCooldown(player);
+            Abilities.ready(player, "Mace available");
+        }
+    }
+
+    static String cooldownText(PlayerState s, int now) {
+        if (!s.maceCooling || now >= s.maceCooldownUntil) return null;
+        return "§cMace " + Abilities.secondsLeft(s.maceCooldownUntil, now) + "s";
+    }
+}

@@ -1,0 +1,30 @@
+{
+    "required": false,
+    "minVersion": "0.8",
+    "package": "com.variantsmp.mixin",
+    "compatibilityLevel": "JAVA_21",
+    "mixins": [
+        "LivingEntityDamageMixin",
+        "PlayerSweepMixin",
+        "PlayerGlideMixin",
+        "EnchantmentHelperMixin",
+        "PlayerEntityAccessor",
+        "LivingEntityInvoker",
+        "PlayerExhaustionMixin",
+        "PiercingWeaponMixin",
+        "HungerManagerAccessor",
+        "CommandMixin",
+        "BlockMixin",
+        "LivingEntityStageMixin",
+        "EnchantmentLevelMixin",
+        "ItemUseMixin",
+        "SplashPotionMixin",
+        "VaultServerMixin",
+        "PlayerXpMixin",
+        "TotemUsedMixin",
+        "EnderPearlMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 0
+    }
+}
