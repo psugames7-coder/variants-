@@ -1,0 +1,45 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find project folder
+        id: find
+        run: |
+          dir=$(dirname "$(find . -name settings.gradle -not -path '*/.gradle/*' | head -n 1)")
+          if [ -z "$dir" ] || [ "$dir" = "." ] && [ ! -f settings.gradle ]; then
+            echo "settings.gradle not found"; exit 1
+          fi
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "Building in $dir"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.2.1
+
+      - name: Build
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: gradle build --no-daemon
+
+      - name: Collect jar
+        run: |
+          mkdir -p out
+          find "${{ steps.find.outputs.dir }}/build/libs" -name '*.jar' ! -name '*-sources.jar' -exec cp {} out/ \;
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: variantsmp
+          path: out/*.jar
